@@ -1,0 +1,123 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <cublas.h>
+#include <time.h>
+
+#define HA 2
+#define WA 9
+#define WB 2
+#define HB WA 
+#define WC WB   
+#define HC HA  
+#define index(i,j,ld) (((j)*(ld))+(i)) // Column-major for cuBLAS
+
+void printMat(float* P, int uWP, int uHP) {
+    int i, j;
+    for (i = 0; i < uHP; i++) {
+        printf("\n");
+        for (j = 0; j < uWP; j++)
+            printf("%f ", P[index(i, j, uHP)]); // Adjusted for column-major indexing
+    }
+}
+
+__host__ float* initializeHostMemory(int height, int width, bool random, float nonRandomValue) {
+    float* hostMatrix = (float*)malloc(height * width * sizeof(float));
+    if (!hostMatrix) return NULL;
+
+    for (int i = 0; i < height * width; i++) {
+        hostMatrix[i] = random ? ((float)rand() / RAND_MAX) : nonRandomValue;
+    }
+    return hostMatrix;
+}
+
+__host__ float *initializeDeviceMemoryFromHostMemory(int height, int width, float *hostMatrix) {
+    float* deviceMatrix;
+    cudaMalloc((void**)&deviceMatrix, height * width * sizeof(float));
+    cudaMemcpy(deviceMatrix, hostMatrix, height * width * sizeof(float), cudaMemcpyHostToDevice);
+    return deviceMatrix;
+}
+
+__host__ float *retrieveDeviceMemory(int height, int width, float *deviceMatrix, float *hostMemory) {
+    cudaMemcpy(hostMemory, deviceMatrix, height * width * sizeof(float), cudaMemcpyDeviceToHost);
+    return hostMemory;
+}
+
+__host__ void printMatrices(float *A, float *B, float *C) {
+    printf("\nMatrix A:\n");
+    printMat(A, WA, HA);
+    printf("\n");
+
+    printf("\nMatrix B:\n");
+    printMat(B, WB, HB);
+    printf("\n");
+
+    printf("\nMatrix C:\n");
+    printMat(C, WC, HC);
+    printf("\n");
+}
+
+__host__ int freeMatrices(float *A, float *B, float *C, float *AA, float *BB, float *CC) {
+    free(A); free(B); free(C);
+    cublasStatus status;
+    status = cublasFree(AA);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "!!!! memory free error (A)\n");
+        return EXIT_FAILURE;
+    }
+    status = cublasFree(BB);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "!!!! memory free error (B)\n");
+        return EXIT_FAILURE;
+    }
+    status = cublasFree(CC);
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "!!!! memory free error (C)\n");
+        return EXIT_FAILURE;
+    }
+    return EXIT_SUCCESS;
+}
+
+int main(int argc, char** argv) {
+    srand(time(NULL));
+    cublasStatus status;
+    cublasInit();
+
+    // Host matrices A and B
+    float* A = initializeHostMemory(HA, WA, true, 0.0f);
+    float* B = initializeHostMemory(HB, WB, true, 0.0f);
+    float* C = initializeHostMemory(HC, WC, false, 0.0f);
+
+    if (A == NULL || B == NULL || C == NULL) {
+        fprintf(stderr, "Host memory allocation failed.\n");
+        return EXIT_FAILURE;
+    }
+
+    float alpha = 1.0f;
+    float beta = 0.0f;
+
+    float* AA = initializeDeviceMemoryFromHostMemory(HA, WA, A);
+    float* BB = initializeDeviceMemoryFromHostMemory(HB, WB, B);
+    float* CC = initializeDeviceMemoryFromHostMemory(HC, WC, C);
+
+    // Matrix Multiplication: C = alpha * A * B + beta * C
+    // A: HA x WA, B: HB x WB → C: HA x WB
+    cublasSgemm('n', 'n', HC, WC, WA, alpha, AA, HA, BB, HB, beta, CC, HC);
+
+    // Copy result from device to host
+    C = retrieveDeviceMemory(HC, WC, CC, C);
+
+    // Print matrices
+    printMatrices(A, B, C);
+
+    // Free memory
+    freeMatrices(A, B, C, AA, BB, CC);
+
+    // Shutdown cuBLAS
+    status = cublasShutdown();
+    if (status != CUBLAS_STATUS_SUCCESS) {
+        fprintf(stderr, "!!!! shutdown error\n");
+        return EXIT_FAILURE;
+    }
+
+    return EXIT_SUCCESS;
+}
